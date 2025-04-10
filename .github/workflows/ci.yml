@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: mix test (Elixir ${{matrix.elixir}} | OTP ${{matrix.otp}})
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+
+    strategy:
+      matrix:
+        include:
+          - elixir: 1.18.3
+            otp: 27
+            lint: lint
+            coverage: true
+
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Restore dependencies and _build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: deps-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}
+
+      # Step: Conditionally bust the cache when job is re-run.
+      # Sometimes, we may have issues with incremental builds that are fixed by
+      # doing a full recompile. In order to not waste dev time on such trivial
+      # issues (while also reaping the time savings of incremental builds for
+      # *most* day-to-day development), force a full recompile only on builds
+      # that are retried.
+      - name: Clean to rule out incremental build as a source of flakiness
+        if: github.run_attempt != '1'
+        run: |
+          mix deps.clean --all
+          mix clean
+        shell: sh
+
+      - name: Install dependencies and check mix.lock for pending changes
+        run: mix deps.get --check-locked
+
+      - name: Check source code format
+        run: mix format --check-formatted
+        if: ${{ matrix.lint }}
+
+      - name: Check coding style
+        run: mix credo --strict
+        if: ${{ matrix.lint }}
+
+      - name: Check for unused dependencies
+        run: mix deps.unlock --check-unused
+        if: ${{ matrix.lint }}
+
+      - name: Compile dependencies
+        run: mix deps.compile
+
+      - name: Check for compilation warnings
+        run: mix compile --warnings-as-errors
+        if: ${{ matrix.lint }}
+
+      - name: Run tests
+        run: mix test --slowest 5
+        if: ${{ ! matrix.lint }}
+
+      - name: Run tests
+        run: mix test --slowest 5 --warnings-as-errors
+        if: ${{ matrix.lint }}
